@@ -1,5 +1,7 @@
 import lombok.Data;
 import org.apache.commons.lang3.StringUtils;
+import org.json.simple.JSONObject;
+import org.json.simple.parser.JSONParser;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -97,27 +99,32 @@ public class ServerNode {
                             ;
                             // keeps sending votes until a signal from the leader is received
                             // or this server becomes leader itself
-                            try {
-                                Thread.sleep(500);
-                            } catch (InterruptedException e) {
-                                e.printStackTrace();
-                            }
-                            peers.forEach(peer -> {
-                                // 不需要给本机发送
-                                if (!StringUtils.equals(this.getHost(), peer.getHost())
-                                        || this.getPort() != peer.getPort()) {
-                                    try {
-                                        Socket socket = new Socket();
-                                        socket.connect(new InetSocketAddress(peer.getHost(), peer.getPort()));
-                                        OutputStream outputStream = socket.getOutputStream();
-                                        outputStream.write(("Msg from the follower:" + this).getBytes());
-                                        socket.close();
-                                    } catch (IOException e) {
-//                                    e.printStackTrace();
-                                    }
+                            for (; ; ) {
+                                try {
+                                    Thread.sleep(500);
+                                } catch (InterruptedException e) {
+                                    e.printStackTrace();
                                 }
-                            });
-                            break;
+                                peers.forEach(peer -> {
+                                    // 不需要给本机发送
+                                    if (!StringUtils.equals(this.getHost(), peer.getHost())
+                                            || this.getPort() != peer.getPort()) {
+                                        try {
+                                            Socket socket = new Socket();
+                                            socket.getLocalAddress();
+                                            socket.connect(new InetSocketAddress(peer.getHost(), peer.getPort()));
+                                            OutputStream outputStream = socket.getOutputStream();
+
+                                            Map<String, Object> msg = RaftMessage.raftMessage(term, this.getHost(), this.getPort(), "test");
+                                            outputStream.write(JSONObject.toJSONString(msg).getBytes());
+                                            socket.close();
+                                        } catch (IOException e) {
+//                                    e.printStackTrace();
+                                        }
+                                    }
+                                });
+                                term++;
+                            }
                     }
                 }
             }
@@ -130,15 +137,23 @@ public class ServerNode {
                 try {
                     Socket accept = serverSocket.accept();
 //                    accepts.add(accept);
-                    System.out.println("====Accepted socket:"+accept.getRemoteSocketAddress());
+                    System.out.println("====Accepted socket:" + accept.getRemoteSocketAddress());
                     InputStream inputStream = accept.getInputStream();
-                    byte[] reveive = new byte[128];
-
-                    if (inputStream.read(reveive) != -1) {
-                        System.out.println(new String(reveive));
+                    byte[] reveive = new byte[1024];
+                    int index = 0;
+                    int read;
+                    while ((read = inputStream.read()) > 0) {
+                        reveive[index++] = (byte) read;
                     }
+
+                    String s = new String(reveive, 0, index);
+                    System.out.println(s);
+                    JSONParser parser = new JSONParser();
+                    Map<String, Object> parse = (Map<String, Object>) parser.parse(s);
+
+                    System.out.println("received:" + parse);
                     accept.close();
-                } catch (IOException e) {
+                } catch (Exception e) {
                     e.printStackTrace();
                 }
             }
