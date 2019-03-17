@@ -5,6 +5,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
 import org.liguang.raft.RaftMessage;
+import org.liguang.raft.util.SocketUtils;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -79,7 +80,9 @@ public class ServerNode {
                                 status = ServerStatus.CANDIDATE;
                                 break;
                             } finally {
-                                term++;
+                                synchronized (lock) {
+                                    term++;
+                                }
                             }
                         }
 
@@ -129,14 +132,19 @@ public class ServerNode {
 
                                         Map<String, Object> msg = RaftMessage.raftMessage(term, this.getHost(), this.getPort(), "test");
                                         outputStream.write(JSONObject.toJSONString(msg).getBytes());
-                                        socket.getInputStream();
+
+                                        String readStr = SocketUtils.readStr(socket.getInputStream());
+                                        System.out.println(readStr);
                                         socket.close();
                                     } catch (IOException e) {
 //                                    e.printStackTrace();
                                     }
                                 }
                             });
-                            term++;
+
+                            synchronized (lock) {
+                                term++;
+                            }
                         }
                 }
 
@@ -151,16 +159,8 @@ public class ServerNode {
                     Socket accept = serverSocket.accept();
 //                    accepts.add(accept);
                     System.out.println("====Accepted socket:" + accept.getRemoteSocketAddress());
-                    InputStream inputStream = accept.getInputStream();
-                    byte[] reveive = new byte[1024];
-                    int index = 0;
-                    int read;
-                    while ((read = inputStream.read()) > 0) {
-                        reveive[index++] = (byte) read;
-                    }
 
-                    String s = new String(reveive, 0, index);
-                    System.out.println(s);
+                    String s=SocketUtils.readStr(accept.getInputStream());
                     JSONParser parser = new JSONParser();
                     Map<String, Object> parse = (Map<String, Object>) parser.parse(s);
 
