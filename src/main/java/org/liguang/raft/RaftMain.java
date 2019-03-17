@@ -1,5 +1,4 @@
-import org.json.simple.JSONObject;
-import org.json.simple.parser.JSONParser;
+package org.liguang.raft;
 
 /**
  * @author liguang

@@ -74,7 +74,7 @@
                             <addClasspath>true</addClasspath>
                             <classpathPrefix>libs/</classpathPrefix>
                             <mainClass>
-                                RaftMain
+                                org.liguang.raft.RaftMain
                             </mainClass>
                         </manifest>
                     </archive>
@@ -90,7 +90,7 @@
                             <addClasspath>true</addClasspath>
                             <classpathPrefix>libs/</classpathPrefix>
                             <mainClass>
-                                RaftMain
+                                org.liguang.raft.RaftMain
                             </mainClass>
                         </manifest>
                     </archive>

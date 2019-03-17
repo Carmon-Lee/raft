@@ -1,4 +1,7 @@
+package org.liguang.raft;
+
 import lombok.Data;
+import org.liguang.raft.server.ServerNode;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -21,7 +24,7 @@ public class Configuration {
     private void init() {
         Properties properties = new Properties();
         try {
-            properties.load(Configuration.class.getResourceAsStream("config.properties"));
+            properties.load(Configuration.class.getResourceAsStream("/config.properties"));
         } catch (IOException e) {
             e.printStackTrace();
         }

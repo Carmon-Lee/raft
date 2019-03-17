@@ -1,3 +1,5 @@
+package org.liguang.raft;
+
 import lombok.Data;
 
 import java.util.HashMap;
@@ -20,4 +22,18 @@ public class RaftMessage {
         result.put("content", content);
         return result;
     }
+
+    public static Map<String, Object> raftResp(int term,
+                                                  String host,
+                                                  int port,
+                                                  boolean voted) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("host", host);
+        result.put("port", port);
+        result.put("term", term);
+        result.put("voted", voted);
+        return result;
+    }
 }
+
+
