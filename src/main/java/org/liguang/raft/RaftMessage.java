@@ -11,7 +11,7 @@ import java.util.Map;
 
 public class RaftMessage {
 
-    public static Map<String, Object> raftMessage(int term,
+    public static Map<String, Object> raftMessage(long term,
                                                   String host,
                                                   int port,
                                                   String content) {
@@ -23,7 +23,7 @@ public class RaftMessage {
         return result;
     }
 
-    public static Map<String, Object> raftResp(int term,
+    public static Map<String, Object> raftResp(long term,
                                                   String host,
                                                   int port,
                                                   boolean voted) {

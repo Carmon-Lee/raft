@@ -1,6 +1,7 @@
 package org.liguang.raft.server;
 
 import lombok.Data;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
@@ -21,6 +22,7 @@ import java.util.concurrent.*;
  */
 
 @Data
+@Slf4j
 public class ServerNode {
 
     private static int SLOW_FACTOR = 20;
@@ -29,7 +31,7 @@ public class ServerNode {
     private int port;
     private int id;
 
-    private volatile int term;
+    private volatile long term;
     private volatile boolean voted;
 
     private volatile ServerStatus status = ServerStatus.FOLLOWER;
@@ -47,6 +49,19 @@ public class ServerNode {
     private final ExecutorService acceptThread = Executors.newFixedThreadPool(1);
     private final ExecutorService connThread = Executors.newFixedThreadPool(1);
     private final ExecutorService followerThread = Executors.newFixedThreadPool(1);
+
+    public void incTerm() {
+        synchronized (lock) {
+            term++;
+        }
+    }
+
+    public synchronized void incTermAndVoted() {
+        synchronized (lock) {
+            term++;
+            voted = true;
+        }
+    }
 
     public void start() {
         countThread = new Thread(() -> {
@@ -91,7 +106,7 @@ public class ServerNode {
                         // on command reception, the follower will reset the timer,
                         // if no command is received during this time period,
                         // then the server will switch to candidate status
-                        System.out.println("---------switching to follower----------");
+                        log.info("---------switching to follower----------");
                         while (true) {
                             try {
                                 voted = true;
@@ -100,17 +115,14 @@ public class ServerNode {
                                 status = ServerStatus.CANDIDATE;
                                 break;
                             } catch (InterruptedException e) {
-                                System.out.println("======= Count for the next term:" + term + " ========");
+                                log.warn("======= Count for the next term:" + term + " ========");
                             } finally {
-                                synchronized (lock) {
-                                    term++;
-                                    voted = false;
-                                }
+//                                incTermAndVoted();
                             }
                         }
 
                     case CANDIDATE:
-                        System.out.println("=======Switching to candidate=======");
+                        log.info("=======Switching to candidate=======");
 
                         // keeps sending votes until a signal from the leader is received
                         // or this server becomes leader itself
@@ -134,17 +146,23 @@ public class ServerNode {
                                         outputStream.write(JSONObject.toJSONString(msg).getBytes());
 
                                         String readStr = SocketUtils.readStr(socket.getInputStream());
-                                        System.out.println(readStr);
+                                        JSONParser parser = new JSONParser();
+                                        Map<String, Object> resp = (Map<String, Object>) parser.parse(readStr);
+                                        synchronized (lock) {
+                                            Long peerTerm = (Long) resp.get("term");
+                                            if (peerTerm > this.term) {
+                                                this.term = peerTerm;
+                                            }
+                                        }
+                                        log.info("server received:{}", readStr);
                                         socket.close();
-                                    } catch (IOException e) {
+                                    } catch (Exception e) {
 //                                    e.printStackTrace();
                                     }
                                 }
                             });
 
-                            synchronized (lock) {
-                                term++;
-                            }
+                            incTerm();
                         }
                 }
 
@@ -157,10 +175,9 @@ public class ServerNode {
             for (; ; ) {
                 try {
                     Socket accept = serverSocket.accept();
-//                    accepts.add(accept);
-                    System.out.println("====Accepted socket:" + accept.getRemoteSocketAddress());
+                    log.debug("Socket accepted:" + accept);
 
-                    String s=SocketUtils.readStr(accept.getInputStream());
+                    String s = SocketUtils.readStr(accept.getInputStream());
                     JSONParser parser = new JSONParser();
                     Map<String, Object> parse = (Map<String, Object>) parser.parse(s);
 
@@ -174,7 +191,7 @@ public class ServerNode {
                     jsonString = JSONObject.toJSONString(raftResp);
                     accept.getOutputStream().write(jsonString.getBytes());
 
-                    System.out.println("received:" + parse);
+                    log.info("client received:{}", parse);
                     accept.close();
                 } catch (Exception e) {
                     e.printStackTrace();
