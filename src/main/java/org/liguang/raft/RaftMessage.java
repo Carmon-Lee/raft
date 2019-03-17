@@ -1,6 +1,7 @@
 package org.liguang.raft;
 
 import lombok.Data;
+import org.liguang.raft.server.ServerStatus;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -14,10 +15,12 @@ public class RaftMessage {
     public static Map<String, Object> raftMessage(long term,
                                                   String host,
                                                   int port,
+                                                  ServerStatus status,
                                                   String content) {
         Map<String, Object> result = new HashMap<>();
         result.put("term", term);
         result.put("host", host);
+        result.put("status", status.toString());
         result.put("port", port);
         result.put("content", content);
         return result;

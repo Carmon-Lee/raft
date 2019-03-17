@@ -16,6 +16,9 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * @author liguang
@@ -25,7 +28,7 @@ import java.util.concurrent.*;
 @Slf4j
 public class ServerNode {
 
-    private static int SLOW_FACTOR = 20;
+    private static int SLOW_FACTOR = 10;
 
     private String host;
     private int port;
@@ -43,7 +46,13 @@ public class ServerNode {
 
     private Random random = new Random();
     private Thread countThread;
+    private Thread electionTimer;
     private final Object lock = new Object();
+    private final Object electionLock = new Object();
+    private final Lock lock1 = new ReentrantLock();
+    private long electionStart;
+    private long electionEnd;
+
 
     private final ExecutorService leaderThread = Executors.newFixedThreadPool(1);
     private final ExecutorService acceptThread = Executors.newFixedThreadPool(1);
@@ -64,6 +73,7 @@ public class ServerNode {
     }
 
     public void start() {
+
         countThread = new Thread(() -> {
 
             // while loops constantly
@@ -108,6 +118,9 @@ public class ServerNode {
                         // then the server will switch to candidate status
                         log.info("---------switching to follower----------");
                         while (true) {
+                            synchronized (electionLock) {
+                                electionLock.notifyAll();
+                            }
                             try {
                                 voted = true;
                                 Thread.sleep(SLOW_FACTOR * 150 + random.nextInt(SLOW_FACTOR * 150));
@@ -127,6 +140,8 @@ public class ServerNode {
                         // keeps sending votes until a signal from the leader is received
                         // or this server becomes leader itself
                         for (; ; ) {
+
+
                             try {
                                 Thread.sleep(SLOW_FACTOR * 50);
                             } catch (InterruptedException e) {
@@ -142,7 +157,7 @@ public class ServerNode {
                                         socket.connect(new InetSocketAddress(peer.getHost(), peer.getPort()));
                                         OutputStream outputStream = socket.getOutputStream();
 
-                                        Map<String, Object> msg = RaftMessage.raftMessage(term, this.getHost(), this.getPort(), "test");
+                                        Map<String, Object> msg = RaftMessage.raftMessage(term, this.getHost(), this.getPort(), status, "test");
                                         outputStream.write(JSONObject.toJSONString(msg).getBytes());
 
                                         String readStr = SocketUtils.readStr(socket.getInputStream());
@@ -165,10 +180,33 @@ public class ServerNode {
                             incTerm();
                         }
                 }
-
             }
         });
         countThread.start();
+
+        electionTimer = new Thread(() -> {
+            log.info("--------- follower timing ----------");
+            while (true) {
+                synchronized (electionLock) {
+                    // only follower keeps a timer
+                    try {
+                        if (status == ServerStatus.LEADER) {
+                            electionLock.wait();
+                        }
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                }
+
+                try {
+                    Thread.sleep(SLOW_FACTOR * 150 + random.nextInt(SLOW_FACTOR * 150));
+                    log.info("======== timeout ============");
+                } catch (InterruptedException e) {
+                    log.info("======== heart beat =========");
+                }
+            }
+        }, "electionTimer");
+        electionTimer.start();
 
         acceptThread.submit(() -> {
             ServerSocket serverSocket = new ServerSocket(port);
@@ -179,7 +217,15 @@ public class ServerNode {
 
                     String s = SocketUtils.readStr(accept.getInputStream());
                     JSONParser parser = new JSONParser();
-                    Map<String, Object> parse = (Map<String, Object>) parser.parse(s);
+                    Map<String, Object> raftMsg = (Map<String, Object>) parser.parse(s);
+                    ServerStatus voteStatus = Enum.valueOf(ServerStatus.class, (String) raftMsg.get("status"));
+                    if (voteStatus == ServerStatus.CANDIDATE) {
+                        electionTimer.interrupt();
+                    }
+
+//                    if (status == ServerStatus.CANDIDATE) {
+//                        electionTimer.interrupt();
+//                    }
 
                     Map<String, Object> raftResp;
                     String jsonString;
@@ -191,7 +237,7 @@ public class ServerNode {
                     jsonString = JSONObject.toJSONString(raftResp);
                     accept.getOutputStream().write(jsonString.getBytes());
 
-                    log.info("client received:{}", parse);
+                    log.info("client received:{}", raftMsg);
                     accept.close();
                 } catch (Exception e) {
                     e.printStackTrace();
