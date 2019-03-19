@@ -8,15 +8,13 @@ import org.json.simple.parser.JSONParser;
 import org.liguang.raft.RaftMessage;
 import org.liguang.raft.util.SocketUtils;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.locks.Condition;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -35,6 +33,7 @@ public class ServerNode {
     private int id;
 
     private volatile long term;
+    // voted: true代表已投票，false代表未投票
     private volatile boolean voted;
 
     private volatile ServerStatus status = ServerStatus.FOLLOWER;
@@ -49,6 +48,7 @@ public class ServerNode {
     private Thread electionTimer;
     private final Object lock = new Object();
     private final Object electionLock = new Object();
+    private final CountDownLatch latch = new CountDownLatch(2);
     private final Lock lock1 = new ReentrantLock();
     private long electionStart;
     private long electionEnd;
@@ -74,8 +74,79 @@ public class ServerNode {
 
     public void start() {
 
-        countThread = new Thread(() -> {
+        acceptThread.submit(() -> {
+            ServerSocket serverSocket = new ServerSocket(port);
+            latch.countDown();
+            for (; ; ) {
+                try {
+                    Socket accept = serverSocket.accept();
+                    log.debug("Socket accepted:" + accept);
 
+                    String s = SocketUtils.readStr(accept.getInputStream());
+                    JSONParser parser = new JSONParser();
+                    Map<String, Object> raftMsg = (Map<String, Object>) parser.parse(s);
+                    ServerStatus voteStatus = Enum.valueOf(ServerStatus.class, (String) raftMsg.get("status"));
+                    if (voteStatus == ServerStatus.FOLLOWER) {
+                        electionTimer.interrupt();
+                    }
+
+
+                    Map<String, Object> raftResp;
+                    String jsonString;
+
+                    synchronized (lock) {
+                        if (voted) {
+                            raftResp = RaftMessage.raftResp(term, host, port, false);
+                        } else {
+                            voted = true;
+                            raftResp = RaftMessage.raftResp(term, host, port, true);
+                        }
+                    }
+
+                    jsonString = JSONObject.toJSONString(raftResp);
+                    accept.getOutputStream().write(jsonString.getBytes());
+
+                    log.info("client received:{}", raftMsg);
+                    accept.close();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        });
+
+        electionTimer = new Thread(() -> {
+            log.info("--------- follower timing ----------");
+            latch.countDown();
+            while (true) {
+                synchronized (electionLock) {
+                    // only follower keeps a timer
+                    try {
+                        if (status != ServerStatus.FOLLOWER) {
+                            electionLock.wait();
+                        }
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                }
+
+                try {
+                    Thread.sleep(SLOW_FACTOR * 150 + random.nextInt(SLOW_FACTOR * 150));
+                    status = ServerStatus.CANDIDATE;
+                    log.info("======== timeout ============");
+                } catch (InterruptedException e) {
+                    log.info("======== heart beat =========");
+                }
+            }
+        }, "electionTimer");
+        electionTimer.start();
+
+        countThread = new Thread(() -> {
+            // wait for the
+            try {
+                latch.await();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
             // while loops constantly
             while (true) {
                 switch (status) {
@@ -91,11 +162,16 @@ public class ServerNode {
                                 Future<String> submit = leaderThread.submit(() -> {
                                     peers.forEach(peer -> {
                                         // connect each peer
+                                        try {
+                                            Thread.sleep(SLOW_FACTOR * 20);
+                                        } catch (InterruptedException e) {
+                                            e.printStackTrace();
+                                        }
                                     });
                                     return "success";
                                 });
                                 String s = submit.get(SLOW_FACTOR * 100, TimeUnit.MILLISECONDS);
-                                System.out.println("send heart beat success, still being a leader");
+                                log.info("send heart beat success, still being a leader");
                                 // if no message is received, then switch state
 
                             } catch (ExecutionException e) {
@@ -122,7 +198,7 @@ public class ServerNode {
                                 electionLock.notifyAll();
                             }
                             try {
-                                voted = true;
+//                                voted = true;
                                 Thread.sleep(SLOW_FACTOR * 150 + random.nextInt(SLOW_FACTOR * 150));
                                 // if run out of time
                                 status = ServerStatus.CANDIDATE;
@@ -140,13 +216,13 @@ public class ServerNode {
                         // keeps sending votes until a signal from the leader is received
                         // or this server becomes leader itself
                         for (; ; ) {
-
-
                             try {
                                 Thread.sleep(SLOW_FACTOR * 50);
                             } catch (InterruptedException e) {
                                 e.printStackTrace();
                             }
+
+                            AtomicInteger voteCount = new AtomicInteger(1);
                             peers.forEach(peer -> {
                                 // 不需要给本机发送
                                 if (!StringUtils.equals(this.getHost(), peer.getHost())
@@ -169,6 +245,9 @@ public class ServerNode {
                                                 this.term = peerTerm;
                                             }
                                         }
+                                        if ((Boolean) resp.get("voted")) {
+                                            voteCount.incrementAndGet();
+                                        }
                                         log.info("server received:{}", readStr);
                                         socket.close();
                                     } catch (Exception e) {
@@ -178,78 +257,22 @@ public class ServerNode {
                             });
 
                             incTerm();
+                            if (voteCount.get() >= 2) {
+                                status = ServerStatus.LEADER;
+                                break;
+                            }
                         }
                 }
             }
         });
         countThread.start();
 
-        electionTimer = new Thread(() -> {
-            log.info("--------- follower timing ----------");
-            while (true) {
-                synchronized (electionLock) {
-                    // only follower keeps a timer
-                    try {
-                        if (status == ServerStatus.LEADER) {
-                            electionLock.wait();
-                        }
-                    } catch (InterruptedException e) {
-                        e.printStackTrace();
-                    }
-                }
-
-                try {
-                    Thread.sleep(SLOW_FACTOR * 150 + random.nextInt(SLOW_FACTOR * 150));
-                    log.info("======== timeout ============");
-                } catch (InterruptedException e) {
-                    log.info("======== heart beat =========");
-                }
-            }
-        }, "electionTimer");
-        electionTimer.start();
-
-        acceptThread.submit(() -> {
-            ServerSocket serverSocket = new ServerSocket(port);
-            for (; ; ) {
-                try {
-                    Socket accept = serverSocket.accept();
-                    log.debug("Socket accepted:" + accept);
-
-                    String s = SocketUtils.readStr(accept.getInputStream());
-                    JSONParser parser = new JSONParser();
-                    Map<String, Object> raftMsg = (Map<String, Object>) parser.parse(s);
-                    ServerStatus voteStatus = Enum.valueOf(ServerStatus.class, (String) raftMsg.get("status"));
-                    if (voteStatus == ServerStatus.CANDIDATE) {
-                        electionTimer.interrupt();
-                    }
-
-//                    if (status == ServerStatus.CANDIDATE) {
-//                        electionTimer.interrupt();
-//                    }
-
-                    Map<String, Object> raftResp;
-                    String jsonString;
-
-                    synchronized (lock) {
-                        raftResp = RaftMessage.raftResp(term, host, port, voted);
-                    }
-
-                    jsonString = JSONObject.toJSONString(raftResp);
-                    accept.getOutputStream().write(jsonString.getBytes());
-
-                    log.info("client received:{}", raftMsg);
-                    accept.close();
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-            }
-        });
     }
 
 
     @Override
     public String toString() {
-        return "org.liguang.raft.server.ServerNode{" +
+        return "ServerNode{" +
                 "host='" + host + '\'' +
                 ", port=" + port +
                 ", id=" + id +
