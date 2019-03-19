@@ -39,6 +39,7 @@ public class Configuration {
             this.clusters.add(serverNode);
         }
 
+        localServer.setQuorumNum((clusters.length + 1) / 2);
         localServer.setPort(Integer.valueOf(properties.getProperty("serverPort")));
         localServer.setHost("localhost");
         localServer.setId(Integer.valueOf(properties.getProperty("serverId")));

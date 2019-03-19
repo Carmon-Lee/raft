@@ -38,6 +38,8 @@ public class ServerNode {
 
     private volatile ServerStatus status = ServerStatus.FOLLOWER;
     private List<ServerNode> peers;
+    private int quorumNum;
+    private volatile boolean cancelCand = false;
     private List<Socket> accepts = new ArrayList<>();
     private ConcurrentHashMap<Socket, ServerNode> clientSocketRegistry = new ConcurrentHashMap<>();
     private Socket socket;
@@ -48,6 +50,7 @@ public class ServerNode {
     private Thread electionTimer;
     private final Object lock = new Object();
     private final Object electionLock = new Object();
+    private final Object sleepLock = new Object();
     private final CountDownLatch latch = new CountDownLatch(2);
     private final Lock lock1 = new ReentrantLock();
     private long electionStart;
@@ -86,8 +89,9 @@ public class ServerNode {
                     JSONParser parser = new JSONParser();
                     Map<String, Object> raftMsg = (Map<String, Object>) parser.parse(s);
                     ServerStatus voteStatus = Enum.valueOf(ServerStatus.class, (String) raftMsg.get("status"));
-                    if (voteStatus == ServerStatus.FOLLOWER) {
-                        electionTimer.interrupt();
+                    log.info("status:"+voteStatus.toString());
+                    synchronized (sleepLock) {
+                        sleepLock.notifyAll();
                     }
 
 
@@ -96,10 +100,10 @@ public class ServerNode {
 
                     synchronized (lock) {
                         if (voted) {
-                            raftResp = RaftMessage.raftResp(term, host, port, false);
+                            raftResp = RaftMessage.raftResp(term, host, port, status, false);
                         } else {
                             voted = true;
-                            raftResp = RaftMessage.raftResp(term, host, port, true);
+                            raftResp = RaftMessage.raftResp(term, host, port, status, true);
                         }
                     }
 
@@ -115,13 +119,14 @@ public class ServerNode {
         });
 
         electionTimer = new Thread(() -> {
-            log.info("--------- follower timing ----------");
+            log.info("--------- follower timer started ----------");
             latch.countDown();
             while (true) {
                 synchronized (electionLock) {
                     // only follower keeps a timer
                     try {
                         if (status != ServerStatus.FOLLOWER) {
+                            log.info("waiting for the server to switch into follower status");
                             electionLock.wait();
                         }
                     } catch (InterruptedException e) {
@@ -129,13 +134,22 @@ public class ServerNode {
                     }
                 }
 
-                try {
-                    Thread.sleep(SLOW_FACTOR * 150 + random.nextInt(SLOW_FACTOR * 150));
-                    status = ServerStatus.CANDIDATE;
-                    log.info("======== timeout ============");
-                } catch (InterruptedException e) {
-                    log.info("======== heart beat =========");
+                synchronized (sleepLock) {
+                    try {
+                        long t0 = System.currentTimeMillis();
+                        int waitTime = SLOW_FACTOR * 150 + random.nextInt(SLOW_FACTOR * 150);
+                        log.info("timer waiting for a random time in milliseconds:" + waitTime);
+                        sleepLock.wait(waitTime);
+                        if (System.currentTimeMillis() - t0 >= waitTime) {
+                            status = ServerStatus.CANDIDATE;
+                            log.info("======== timeout ============");
+                            sleepLock.notifyAll();
+                        }
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
                 }
+
             }
         }, "electionTimer");
         electionTimer.start();
@@ -196,18 +210,28 @@ public class ServerNode {
                         while (true) {
                             synchronized (electionLock) {
                                 electionLock.notifyAll();
+
                             }
-                            try {
-//                                voted = true;
-                                Thread.sleep(SLOW_FACTOR * 150 + random.nextInt(SLOW_FACTOR * 150));
-                                // if run out of time
-                                status = ServerStatus.CANDIDATE;
-                                break;
-                            } catch (InterruptedException e) {
-                                log.warn("======= Count for the next term:" + term + " ========");
-                            } finally {
-//                                incTermAndVoted();
+                            synchronized (sleepLock) {
+                                try {
+                                    sleepLock.wait();
+                                    log.info("follower has been awakened");
+                                    break;
+                                } catch (InterruptedException e) {
+//                                    e.printStackTrace();
+                                }
                             }
+//                            try {
+////                                voted = true;
+//                                Thread.sleep(SLOW_FACTOR * 150 + random.nextInt(SLOW_FACTOR * 150));
+//                                // if run out of time
+//                                status = ServerStatus.CANDIDATE;
+//                                break;
+//                            } catch (InterruptedException e) {
+//                                log.warn("======= Count for the next term:" + term + " ========");
+//                            } finally {
+////                                incTermAndVoted();
+//                            }
                         }
 
                     case CANDIDATE:
@@ -245,6 +269,10 @@ public class ServerNode {
                                                 this.term = peerTerm;
                                             }
                                         }
+                                        ServerStatus status = ServerStatus.valueOf((String) resp.get("status"));
+                                        if (status == ServerStatus.CANDIDATE) {
+                                            cancelCand = true;
+                                        }
                                         if ((Boolean) resp.get("voted")) {
                                             voteCount.incrementAndGet();
                                         }
@@ -257,8 +285,13 @@ public class ServerNode {
                             });
 
                             incTerm();
-                            if (voteCount.get() >= 2) {
+                            if (voteCount.get() >= quorumNum) {
                                 status = ServerStatus.LEADER;
+                                break;
+                            }
+                            if (cancelCand) {
+                                cancelCand = false;
+                                status = ServerStatus.FOLLOWER;
                                 break;
                             }
                         }

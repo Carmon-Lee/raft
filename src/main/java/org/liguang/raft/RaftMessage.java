@@ -18,22 +18,24 @@ public class RaftMessage {
                                                   ServerStatus status,
                                                   String content) {
         Map<String, Object> result = new HashMap<>();
-        result.put("term", term);
         result.put("host", host);
-        result.put("status", status.toString());
         result.put("port", port);
+        result.put("term", term);
+        result.put("status", status.toString());
         result.put("content", content);
         return result;
     }
 
     public static Map<String, Object> raftResp(long term,
-                                                  String host,
-                                                  int port,
-                                                  boolean voted) {
+                                               String host,
+                                               int port,
+                                               ServerStatus status,
+                                               boolean voted) {
         Map<String, Object> result = new HashMap<>();
         result.put("host", host);
         result.put("port", port);
         result.put("term", term);
+        result.put("status", status.toString());
         result.put("voted", voted);
         return result;
     }
