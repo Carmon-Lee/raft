@@ -8,10 +8,12 @@ import org.json.simple.parser.JSONParser;
 import org.liguang.raft.RaftMessage;
 import org.liguang.raft.util.SocketUtils;
 
+import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.UnknownHostException;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -62,16 +64,10 @@ public class ServerNode {
     private final ExecutorService connThread = Executors.newFixedThreadPool(1);
     private final ExecutorService followerThread = Executors.newFixedThreadPool(1);
 
-    public void incTerm() {
+    public void incTermAndResetVoted() {
         synchronized (lock) {
             term++;
-        }
-    }
-
-    public synchronized void incTermAndVoted() {
-        synchronized (lock) {
-            term++;
-            voted = true;
+            voted = false;
         }
     }
 
@@ -89,7 +85,7 @@ public class ServerNode {
                     JSONParser parser = new JSONParser();
                     Map<String, Object> raftMsg = (Map<String, Object>) parser.parse(s);
                     ServerStatus voteStatus = Enum.valueOf(ServerStatus.class, (String) raftMsg.get("status"));
-                    log.info("status:"+voteStatus.toString());
+                    log.info("status:" + voteStatus.toString());
                     synchronized (sleepLock) {
                         sleepLock.notifyAll();
                     }
@@ -173,27 +169,28 @@ public class ServerNode {
                         System.out.println(":::::::::: switching to leader :::::::::::::");
                         while (true) {
                             try {
-                                Future<String> submit = leaderThread.submit(() -> {
-                                    peers.forEach(peer -> {
-                                        // connect each peer
-                                        try {
-                                            Thread.sleep(SLOW_FACTOR * 20);
-                                        } catch (InterruptedException e) {
-                                            e.printStackTrace();
+                                AtomicInteger aliveConn = new AtomicInteger(0);
+                                peers.forEach(peer -> {
+                                    // connect each peer
+                                    try {
+                                        Socket socket = new Socket();
+                                        socket.connect(new InetSocketAddress(peer.getHost(), peer.getPort()));
+                                        aliveConn.incrementAndGet();
+                                        Thread.sleep(SLOW_FACTOR * 20);
+                                    } catch (InterruptedException | IOException e) {
+//                                        e.printStackTrace();
+                                        if (e instanceof IOException) {
+                                            log.warn("one follower is out of sync,check the connection");
                                         }
-                                    });
-                                    return "success";
+                                    }
                                 });
-                                String s = submit.get(SLOW_FACTOR * 100, TimeUnit.MILLISECONDS);
+                                if (aliveConn.get() < quorumNum) {
+                                    status = ServerStatus.FOLLOWER;
+                                    break;
+                                }
                                 log.info("send heart beat success, still being a leader");
                                 // if no message is received, then switch state
 
-                            } catch (ExecutionException e) {
-                                e.printStackTrace();
-                            } catch (TimeoutException | InterruptedException e) {
-                                e.printStackTrace();
-                                status = ServerStatus.CANDIDATE;
-                                break;
                             } finally {
                                 synchronized (lock) {
                                     term++;
@@ -210,7 +207,6 @@ public class ServerNode {
                         while (true) {
                             synchronized (electionLock) {
                                 electionLock.notifyAll();
-
                             }
                             synchronized (sleepLock) {
                                 try {
@@ -221,17 +217,6 @@ public class ServerNode {
 //                                    e.printStackTrace();
                                 }
                             }
-//                            try {
-////                                voted = true;
-//                                Thread.sleep(SLOW_FACTOR * 150 + random.nextInt(SLOW_FACTOR * 150));
-//                                // if run out of time
-//                                status = ServerStatus.CANDIDATE;
-//                                break;
-//                            } catch (InterruptedException e) {
-//                                log.warn("======= Count for the next term:" + term + " ========");
-//                            } finally {
-////                                incTermAndVoted();
-//                            }
                         }
 
                     case CANDIDATE:
@@ -247,6 +232,7 @@ public class ServerNode {
                             }
 
                             AtomicInteger voteCount = new AtomicInteger(1);
+                            voted = true;
                             peers.forEach(peer -> {
                                 // 不需要给本机发送
                                 if (!StringUtils.equals(this.getHost(), peer.getHost())
@@ -284,7 +270,7 @@ public class ServerNode {
                                 }
                             });
 
-                            incTerm();
+                            incTermAndResetVoted();
                             if (voteCount.get() >= quorumNum) {
                                 status = ServerStatus.LEADER;
                                 break;
